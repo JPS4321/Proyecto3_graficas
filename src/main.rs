@@ -12,12 +12,13 @@ mod fragment;
 mod shaders;
 mod camera;
 
+use nalgebra_glm::Vec4;
 use framebuffer::Framebuffer;
 use vertex::Vertex;
 use obj::Obj;
 use camera::Camera;
 use triangle::triangle;
-use shaders::{vertex_shader, apply_shader, ShaderType};  // Importamos ShaderType y apply_shader
+use shaders::{vertex_shader, apply_shader, ShaderType};  
 use fastnoise_lite::{FastNoiseLite, NoiseType};
 
 pub struct Uniforms {
@@ -105,14 +106,14 @@ fn render_with_shader(
     vertex_array: &[Vertex],
     shader_type: ShaderType,
 ) {
-    // Vertex Shader
+    
     let mut transformed_vertices = Vec::with_capacity(vertex_array.len());
     for vertex in vertex_array {
         let transformed = vertex_shader(vertex, uniforms);
         transformed_vertices.push(transformed);
     }
 
-    // Primitive Assembly
+    
     let mut triangles = Vec::new();
     for i in (0..transformed_vertices.len()).step_by(3) {
         if i + 2 < transformed_vertices.len() {
@@ -124,13 +125,13 @@ fn render_with_shader(
         }
     }
 
-    // Rasterization
+    
     let mut fragments = Vec::new();
     for tri in &triangles {
         fragments.extend(triangle(&tri[0], &tri[1], &tri[2]));
     }
 
-    // Fragment Processing
+    
     for fragment in fragments {
         let x = fragment.position.x as usize;
         let y = fragment.position.y as usize;
@@ -143,6 +144,28 @@ fn render_with_shader(
         }
     }
 }
+fn generate_stars(num_stars: usize, framebuffer_width: usize, framebuffer_height: usize) -> Vec<(usize, usize)> {
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let mut stars = Vec::with_capacity(num_stars);
+
+    for _ in 0..num_stars {
+        let x = rng.gen_range(0..framebuffer_width);
+        let y = rng.gen_range(0..framebuffer_height);
+        stars.push((x, y));
+    }
+
+    stars
+}
+
+fn draw_stars(framebuffer: &mut Framebuffer, stars: &[(usize, usize)]) {
+    for &(x, y) in stars {
+        framebuffer.set_current_color(0xFFFFFF); 
+        framebuffer.point(x, y, 1.0); 
+    }
+}
+
 fn main() {
     let window_width = 800;
     let window_height = 600;
@@ -152,7 +175,7 @@ fn main() {
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     let mut window = Window::new(
-        "Animated Fragment Shader",
+        "Camera Following Planets with Orbit Lines and Offsets",
         window_width,
         window_height,
         WindowOptions::default(),
@@ -162,15 +185,30 @@ fn main() {
     window.set_position(500, 500);
     window.update();
 
-    framebuffer.set_background_color(0x333355);
+    framebuffer.set_background_color(0x000000); 
 
-    // Distancia inicial y distancia entre planetas
-    let base_distance = 5.0; // Distancia inicial desde el planeta central
-    let distance_increment = 5.0; // Incremento constante entre planetas
-    let speed_multiplier = 4.0; // Duplicamos el factor de velocidad (2x la velocidad anterior)
+    
+    let stars = generate_stars(100, framebuffer_width, framebuffer_height);
+
+    
+    let base_distance = 5.0;
+    let distance_increment = 5.0;
+    let speed_multiplier = 4.0;
+    let planet_radius = 1.0;          
+    let disappearance_buffer = 2.0;  
+
+    
+    let orbit_offsets = vec![
+        0.0, 
+        std::f32::consts::PI / 3.0, 
+        std::f32::consts::PI / 4.0, 
+        std::f32::consts::PI / 6.0, 
+        std::f32::consts::PI / 2.0, 
+        std::f32::consts::PI / 8.0, 
+    ];
 
     let spheres = vec![
-        (Vec3::new(0.0, 0.0, 0.0), ShaderType::Lava),              // Planeta central
+        (Vec3::new(0.0, 0.0, 0.0), ShaderType::Lava),
         (Vec3::new(base_distance, 0.0, 0.0), ShaderType::arid_shader),
         (Vec3::new(base_distance + distance_increment, 0.0, 0.0), ShaderType::CrackedEarth),
         (Vec3::new(base_distance + 2.0 * distance_increment, 0.0, 0.0), ShaderType::Dalmata),
@@ -180,14 +218,16 @@ fn main() {
 
     let scale = 1.0f32;
 
-    // Parámetros de la cámara
+    
+    let mut current_planet = 1;
+    let initial_camera_distance = 10.0; 
     let mut camera = Camera::new(
-        Vec3::new(0.0, 0.0, 25.0),
-        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(base_distance, 0.0, initial_camera_distance),
+        Vec3::new(base_distance, 0.0, 0.0),
         Vec3::new(0.0, 1.0, 0.0),
     );
 
-    // Cargar modelo de la esfera
+    
     let obj = Obj::load("assets/models/Sphere.obj").expect("Failed to load obj");
     let vertex_arrays = obj.get_vertex_array();
     let mut time = 0;
@@ -198,32 +238,82 @@ fn main() {
         }
 
         time += 1;
-        handle_input(&window, &mut camera);
+
+        
+        let mut planet_positions = vec![];
+        for (index, _) in spheres.iter().enumerate() {
+            let position = if index == 0 {
+                Vec3::new(0.0, 0.0, 0.0) 
+            } else {
+                let radius = base_distance + (index as f32 - 1.0) * distance_increment;
+                let orbital_speed = speed_multiplier / radius;
+                let angle = time as f32 * 0.01 * orbital_speed + orbit_offsets[index];
+                Vec3::new(radius * angle.cos(), 0.0, radius * angle.sin())
+            };
+            planet_positions.push(position);
+        }
+
+        
+        if window.is_key_down(Key::Key1) {
+            current_planet = 1;
+        } else if window.is_key_down(Key::Key2) && spheres.len() > 2 {
+            current_planet = 2;
+        } else if window.is_key_down(Key::Key3) && spheres.len() > 3 {
+            current_planet = 3;
+        } else if window.is_key_down(Key::Key4) && spheres.len() > 4 {
+            current_planet = 4;
+        } else if window.is_key_down(Key::Key5) && spheres.len() > 5 {
+            current_planet = 5;
+        }
+
+        
+        let planet_position = planet_positions[current_planet];
+        let camera_offset = camera.eye - camera.center; 
+        camera.center = planet_position; 
+        camera.eye = camera.center + camera_offset; 
+
+        
+        handle_camera_input(&window, &mut camera);
+
         framebuffer.clear();
 
+        
+        draw_stars(&mut framebuffer, &stars);
+
+        
         let view_matrix = create_view_matrix(camera.eye, camera.center, camera.up);
         let projection_matrix = create_perspective_matrix(window_width as f32, window_height as f32);
         let viewport_matrix = create_viewport_matrix(framebuffer_width as f32, framebuffer_height as f32);
 
-        // Renderizar cada esfera con su shader específico
-        for (index, (initial_position, shader_type)) in spheres.iter().enumerate() {
-            let position = if index == 0 {
-                *initial_position // El planeta central permanece fijo
-            } else {
-                // Calcular distancia y velocidad orbital
-                let radius = base_distance + (index as f32 - 1.0) * distance_increment;
-                let orbital_speed = speed_multiplier / radius; // Aumentamos la velocidad con un multiplicador duplicado
-                let angle = time as f32 * 0.01 * orbital_speed; // Ángulo en función del tiempo y velocidad
+        
+        for (index, _) in spheres.iter().enumerate() {
+            if index == 0 {
+                continue; 
+            }
 
-                // Movimiento circular en el plano XZ
-                Vec3::new(radius * angle.cos(), 0.0, radius * angle.sin())
-            };
+            let radius = base_distance + (index as f32 - 1.0) * distance_increment;
 
-            // Rotación dinámica para todos los planetas
-            let rotation_angle = time as f32 * 0.01 + (index as f32) * PI / 4.0; // Velocidad de rotación
-            let rotation = Vec3::new(0.0, rotation_angle, 0.0); // Rotación en el eje Y
+            
+            render_orbit_line(&mut framebuffer, radius, &view_matrix, &projection_matrix, &viewport_matrix);
+        }
 
-            let model_matrix = create_model_matrix(position, scale, rotation);
+        
+        for (index, (_, shader_type)) in spheres.iter().enumerate() {
+            let position = planet_positions[index];
+
+            
+            if !is_in_frustum(&position, &view_matrix, &projection_matrix) {
+                continue; 
+            }
+
+            
+            let camera_to_planet_distance = (camera.eye - position).magnitude();
+            if index != current_planet && camera_to_planet_distance <= planet_radius + disappearance_buffer {
+                continue; 
+            }
+
+            
+            let model_matrix = create_model_matrix(position, scale, Vec3::new(0.0, time as f32 * 0.01, 0.0));
             let noise = create_noise();
             let uniforms = Uniforms {
                 model_matrix,
@@ -246,48 +336,92 @@ fn main() {
     }
 }
 
-fn handle_input(window: &Window, camera: &mut Camera) {
-    let movement_speed = 1.0;
-    let rotation_speed = PI / 50.0;
-    let zoom_speed = 0.1;
 
-    // Controles de la cámara para orbitar y mover
-    if window.is_key_down(Key::Left) {
-        camera.orbit(rotation_speed, 0.0);
+
+
+fn render_orbit_line(
+    framebuffer: &mut Framebuffer,
+    radius: f32,
+    view_matrix: &Mat4,
+    projection_matrix: &Mat4,
+    viewport_matrix: &Mat4,
+) {
+    const SEGMENTS: usize = 360;
+    let color = 0xCCCCCC; 
+
+    for i in 0..SEGMENTS {
+        let angle = (i as f32) * 2.0 * std::f32::consts::PI / SEGMENTS as f32;
+        let x = radius * angle.cos();
+        let z = radius * angle.sin();
+        let position = Vec3::new(x, 0.0, z);
+
+        let position_4d = Vec4::new(position.x, position.y, position.z, 1.0);
+        let clip_space_pos = projection_matrix * view_matrix * position_4d;
+        if clip_space_pos.w != 0.0 {
+            let ndc = Vec3::new(
+                clip_space_pos.x / clip_space_pos.w,
+                clip_space_pos.y / clip_space_pos.w,
+                clip_space_pos.z / clip_space_pos.w,
+            );
+
+            
+            let screen_x = ((ndc.x + 1.0) * 0.5 * framebuffer.width as f32) as usize;
+            let screen_y = ((1.0 - ndc.y) * 0.5 * framebuffer.height as f32) as usize;
+
+            if screen_x < framebuffer.width && screen_y < framebuffer.height {
+                framebuffer.set_current_color(color);
+                framebuffer.point(screen_x, screen_y, ndc.z);
+            }
+        }
     }
-    if window.is_key_down(Key::Right) {
+}
+
+
+
+
+fn is_in_frustum(position: &Vec3, view_matrix: &Mat4, projection_matrix: &Mat4) -> bool {
+    
+    let position_4d = Vec4::new(position.x, position.y, position.z, 1.0);
+
+    
+    let clip_space_pos = projection_matrix * view_matrix * position_4d;
+
+    
+    let x_ndc = clip_space_pos.x / clip_space_pos.w;
+    let y_ndc = clip_space_pos.y / clip_space_pos.w;
+    let z_ndc = clip_space_pos.z / clip_space_pos.w;
+
+    
+    x_ndc >= -1.0 && x_ndc <= 1.0 &&
+    y_ndc >= -1.0 && y_ndc <= 1.0 &&
+    z_ndc >= 0.0 && z_ndc <= 1.0 
+}
+
+
+
+fn handle_camera_input(window: &Window, camera: &mut Camera) {
+    let rotation_speed = PI / 50.0;
+    let zoom_speed = 0.5;
+
+    
+    if window.is_key_down(Key::Left) {
         camera.orbit(-rotation_speed, 0.0);
     }
-    if window.is_key_down(Key::W) {
+    if window.is_key_down(Key::Right) {
+        camera.orbit(rotation_speed, 0.0);
+    }
+    if window.is_key_down(Key::Up) {
         camera.orbit(0.0, -rotation_speed);
     }
-    if window.is_key_down(Key::S) {
+    if window.is_key_down(Key::Down) {
         camera.orbit(0.0, rotation_speed);
     }
 
-    // Movimiento de la cámara
-    let mut movement = Vec3::new(0.0, 0.0, 0.0);
-    if window.is_key_down(Key::A) {
-        movement.x -= movement_speed;
-    }
-    if window.is_key_down(Key::D) {
-        movement.x += movement_speed;
-    }
-    if window.is_key_down(Key::Q) {
-        movement.y += movement_speed;
-    }
-    if window.is_key_down(Key::E) {
-        movement.y -= movement_speed;
-    }
-    if movement.magnitude() > 0.0 {
-        camera.move_center(movement);
-    }
-
-    // Zoom de la cámara
-    if window.is_key_down(Key::Up) {
-        camera.zoom(zoom_speed);
-    }
-    if window.is_key_down(Key::Down) {
+    
+    if window.is_key_down(Key::W) {
         camera.zoom(-zoom_speed);
+    }
+    if window.is_key_down(Key::S) {
+        camera.zoom(zoom_speed);
     }
 }

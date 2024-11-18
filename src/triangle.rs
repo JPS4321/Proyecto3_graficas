@@ -9,7 +9,7 @@ pub fn triangle(v1: &Vertex, v2: &Vertex, v3: &Vertex) -> Vec<Fragment> {
 
     let (min_x, min_y, max_x, max_y) = calculate_bounding_box(&a, &b, &c);
 
-    // Define two light directions
+    
     let light_dir1 = Vec3::new(-1.5, 1.0, 0.0);
     let light_dir2 = Vec3::new(-1.5, -1.0, 5.0).normalize();
 
@@ -28,11 +28,11 @@ pub fn triangle(v1: &Vertex, v2: &Vertex, v3: &Vertex) -> Vec<Fragment> {
                 let normal = v1.transformed_normal * w1 + v2.transformed_normal * w2 + v3.transformed_normal * w3;
                 let normal = normal.normalize();
 
-                // Calculate intensity for both light directions
+                
                 let intensity1 = dot(&normal, &light_dir1).max(0.0);
                 let intensity2 = dot(&normal, &light_dir2).max(0.0);
 
-                // Combine intensities (simple addition, clamped to 1.0)
+                
                 let combined_intensity = (intensity1 + intensity2).min(1.0);
 
                 let base_color = Color::new(100, 100, 100);
